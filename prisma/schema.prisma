@@ -1,0 +1,119 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  CLIENT
+}
+enum BookingStatus {
+  HOLD
+  PENDING_PAYMENT
+  CONFIRMED
+  CANCELLED
+  EXPIRED
+}
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String?
+  email        String    @unique
+  passwordHash String
+  role         Role      @default(CLIENT)
+  salon        Salon?
+  bookings     Booking[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Salon {
+  id          String             @id @default(cuid())
+  ownerId     String             @unique
+  owner       User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name        String
+  slug        String             @unique
+  description String?
+  address     String?
+  timezone    String             @default("Europe/Paris")
+  services    Service[]
+  schedules   AvailabilityRule[]
+  bookings    Booking[]
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+}
+
+model Service {
+  id              String    @id @default(cuid())
+  salonId         String
+  salon           Salon     @relation(fields: [salonId], references: [id], onDelete: Cascade)
+  name            String
+  description     String?
+  durationMinutes Int
+  priceCents      Int
+  active          Boolean   @default(true)
+  bookings        Booking[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model AvailabilityRule {
+  id        String   @id @default(cuid())
+  salonId   String
+  salon     Salon    @relation(fields: [salonId], references: [id], onDelete: Cascade)
+  dayOfWeek Int
+  startTime String
+  endTime   String
+  active    Boolean  @default(true)
+  @@unique([salonId, dayOfWeek, startTime, endTime])
+}
+
+model Booking {
+  id              String        @id @default(cuid())
+  salonId         String
+  serviceId       String
+  userId          String?
+  salon           Salon         @relation(fields: [salonId], references: [id], onDelete: Cascade)
+  service         Service       @relation(fields: [serviceId], references: [id])
+  user            User?         @relation(fields: [userId], references: [id])
+  customerName    String
+  customerEmail   String
+  customerPhone   String?
+  startsAt        DateTime
+  endsAt          DateTime
+  holdExpiresAt   DateTime?
+  status          BookingStatus @default(HOLD)
+  stripeSessionId String?       @unique
+  payment         Payment?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  @@index([salonId, startsAt, endsAt])
+}
+
+model Payment {
+  id              String        @id @default(cuid())
+  bookingId       String        @unique
+  booking         Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  stripePaymentId String?       @unique
+  amountCents     Int
+  currency        String        @default("eur")
+  status          PaymentStatus @default(PENDING)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model WebhookEvent {
+  id          String   @id
+  type        String
+  processedAt DateTime @default(now())
+}

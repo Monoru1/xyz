@@ -1,0 +1,1 @@
+import type{CapacitorConfig}from"@capacitor/cli";const config:CapacitorConfig={appId:"com.genk.booking",appName:"GENK",webDir:"mobile",server:process.env.CAPACITOR_SERVER_URL?{url:process.env.CAPACITOR_SERVER_URL,cleartext:false}:undefined};export default config;

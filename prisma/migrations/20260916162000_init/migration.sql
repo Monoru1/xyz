@@ -1,0 +1,15 @@
+CREATE TYPE "Role" AS ENUM ('OWNER', 'CLIENT');
+CREATE TYPE "BookingStatus" AS ENUM ('HOLD', 'PENDING_PAYMENT', 'CONFIRMED', 'CANCELLED', 'EXPIRED');
+CREATE TYPE "PaymentStatus" AS ENUM ('PENDING', 'SUCCEEDED', 'FAILED', 'REFUNDED');
+CREATE TABLE "User" ("id" TEXT PRIMARY KEY, "name" TEXT, "email" TEXT NOT NULL UNIQUE, "passwordHash" TEXT NOT NULL, "role" "Role" NOT NULL DEFAULT 'CLIENT', "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL);
+CREATE TABLE "Salon" ("id" TEXT PRIMARY KEY, "ownerId" TEXT NOT NULL UNIQUE REFERENCES "User"("id") ON DELETE CASCADE, "name" TEXT NOT NULL, "slug" TEXT NOT NULL UNIQUE, "description" TEXT, "address" TEXT, "timezone" TEXT NOT NULL DEFAULT 'Europe/Paris', "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL);
+CREATE TABLE "Service" ("id" TEXT PRIMARY KEY, "salonId" TEXT NOT NULL REFERENCES "Salon"("id") ON DELETE CASCADE, "name" TEXT NOT NULL, "description" TEXT, "durationMinutes" INTEGER NOT NULL, "priceCents" INTEGER NOT NULL, "active" BOOLEAN NOT NULL DEFAULT true, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL);
+CREATE TABLE "AvailabilityRule" ("id" TEXT PRIMARY KEY, "salonId" TEXT NOT NULL REFERENCES "Salon"("id") ON DELETE CASCADE, "dayOfWeek" INTEGER NOT NULL, "startTime" TEXT NOT NULL, "endTime" TEXT NOT NULL, "active" BOOLEAN NOT NULL DEFAULT true);
+CREATE UNIQUE INDEX "AvailabilityRule_salonId_dayOfWeek_startTime_endTime_key" ON "AvailabilityRule"("salonId", "dayOfWeek", "startTime", "endTime");
+CREATE TABLE "Booking" ("id" TEXT PRIMARY KEY, "salonId" TEXT NOT NULL REFERENCES "Salon"("id") ON DELETE CASCADE, "serviceId" TEXT NOT NULL REFERENCES "Service"("id"), "userId" TEXT REFERENCES "User"("id"), "customerName" TEXT NOT NULL, "customerEmail" TEXT NOT NULL, "customerPhone" TEXT, "startsAt" TIMESTAMP(3) NOT NULL, "endsAt" TIMESTAMP(3) NOT NULL, "holdExpiresAt" TIMESTAMP(3), "status" "BookingStatus" NOT NULL DEFAULT 'HOLD', "stripeSessionId" TEXT UNIQUE, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL);
+CREATE INDEX "Booking_salonId_startsAt_endsAt_idx" ON "Booking"("salonId", "startsAt", "endsAt");
+CREATE TABLE "Payment" ("id" TEXT PRIMARY KEY, "bookingId" TEXT NOT NULL UNIQUE REFERENCES "Booking"("id") ON DELETE CASCADE, "stripePaymentId" TEXT UNIQUE, "amountCents" INTEGER NOT NULL, "currency" TEXT NOT NULL DEFAULT 'eur', "status" "PaymentStatus" NOT NULL DEFAULT 'PENDING', "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL);
+CREATE TABLE "WebhookEvent" ("id" TEXT PRIMARY KEY, "type" TEXT NOT NULL, "processedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
+-- PostgreSQL exclusion constraint is the final anti-double-booking guard.
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+ALTER TABLE "Booking" ADD CONSTRAINT "Booking_no_overlap" EXCLUDE USING gist ("salonId" WITH =, tstzrange("startsAt", "endsAt", '[)') WITH &&) WHERE ("status" IN ('HOLD','PENDING_PAYMENT','CONFIRMED'));
