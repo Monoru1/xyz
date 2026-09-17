@@ -12,4 +12,9 @@ CREATE TABLE "Payment" ("id" TEXT PRIMARY KEY, "bookingId" TEXT NOT NULL UNIQUE 
 CREATE TABLE "WebhookEvent" ("id" TEXT PRIMARY KEY, "type" TEXT NOT NULL, "processedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
 -- PostgreSQL exclusion constraint is the final anti-double-booking guard.
 CREATE EXTENSION IF NOT EXISTS btree_gist;
-ALTER TABLE "Booking" ADD CONSTRAINT "Booking_no_overlap" EXCLUDE USING gist ("salonId" WITH =, tstzrange("startsAt", "endsAt", '[)') WITH &&) WHERE ("status" IN ('HOLD','PENDING_PAYMENT','CONFIRMED'));
+ALTER TABLE "Booking" ADD CONSTRAINT "Booking_no_overlap"
+EXCLUDE USING gist (
+  "salonId" WITH =,
+  tsrange("startsAt", "endsAt", '[)') WITH &&
+)
+WHERE ("status" IN ('HOLD','PENDING_PAYMENT','CONFIRMED'));
