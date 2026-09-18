@@ -24,6 +24,9 @@ enum PaymentStatus {
   FAILED
   REFUNDED
 }
+enum PaymentProvider {
+  FEDAPAY
+}
 
 model User {
   id           String    @id @default(cuid())
@@ -79,37 +82,52 @@ model AvailabilityRule {
 }
 
 model Booking {
-  id              String        @id @default(cuid())
-  salonId         String
-  serviceId       String
-  userId          String?
-  salon           Salon         @relation(fields: [salonId], references: [id], onDelete: Cascade)
-  service         Service       @relation(fields: [serviceId], references: [id])
-  user            User?         @relation(fields: [userId], references: [id])
-  customerName    String
-  customerEmail   String
-  customerPhone   String?
-  startsAt        DateTime
-  endsAt          DateTime
-  holdExpiresAt   DateTime?
-  status          BookingStatus @default(HOLD)
-  stripeSessionId String?       @unique
-  payment         Payment?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id            String        @id @default(cuid())
+  salonId       String
+  serviceId     String
+  userId        String?
+  salon         Salon         @relation(fields: [salonId], references: [id], onDelete: Cascade)
+  service       Service       @relation(fields: [serviceId], references: [id])
+  user          User?         @relation(fields: [userId], references: [id])
+  customerName  String
+  customerEmail String
+  customerPhone String?
+  startsAt      DateTime
+  endsAt        DateTime
+  holdExpiresAt DateTime?
+  status        BookingStatus @default(HOLD)
+  payment       Payment?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  /// Lien de confirmation unique envoyé au client par WhatsApp.
+  confirmationToken     String?   @unique
+  confirmationExpiresAt DateTime?
+  /// Identifiant de la transaction créée chez le fournisseur de paiement.
+  providerTransactionId String?   @unique
+  /// Suivi de la notification sortante (WhatsApp).
+  notifiedAt            DateTime?
+  notificationError     String?
+
   @@index([salonId, startsAt, endsAt])
 }
 
 model Payment {
-  id              String        @id @default(cuid())
-  bookingId       String        @unique
-  booking         Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  stripePaymentId String?       @unique
-  amountCents     Int
-  currency        String        @default("eur")
-  status          PaymentStatus @default(PENDING)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id        String  @id @default(cuid())
+  bookingId String  @unique
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  provider              PaymentProvider @default(FEDAPAY)
+  /// Identifiant technique de la transaction chez le fournisseur.
+  providerTransactionId String?         @unique
+  /// Référence lisible renvoyée par le fournisseur.
+  providerReference     String?
+
+  amountCents Int
+  currency    String        @default("XOF")
+  status      PaymentStatus @default(PENDING)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 }
 
 model WebhookEvent {
