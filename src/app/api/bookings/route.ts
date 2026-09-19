@@ -2,40 +2,69 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createBookingHold } from "@/lib/booking";
 import { db } from "@/lib/db";
-import { sendConfirmationTemplate } from "@/lib/whatsapp";
+import { sendConfirmationTemplate, toE164 } from "@/lib/whatsapp";
 
 export const runtime = "nodejs";
 
 const schema = z.object({
   salonId: z.string().min(1), serviceId: z.string().min(1), startsAt: z.coerce.date().refine((d) => d > new Date(), "Date passée"),
-  customerName: z.string().min(2).max(100), customerEmail: z.string().email(), customerPhone: z.string().min(6).max(30),
+  customerName: z.string().min(2).max(100), customerEmail: z.string().email().max(150), customerPhone: z.string().min(6).max(30),
 });
+
+/** Réponses publiques: jamais de détail interne, jamais de trace d'exécution. */
+const FAILURES: Record<string, { status: number; error: string }> = {
+  SLOT_UNAVAILABLE: { status: 409, error: "Ce créneau vient d’être réservé" },
+  SERVICE_NOT_FOUND: { status: 404, error: "Prestation introuvable" },
+  RATE_LIMITED: { status: 429, error: "Trop de demandes pour ce contact. Réessayez plus tard." },
+};
 
 /**
  * Crée la réservation puis envoie le lien de confirmation par WhatsApp.
  * Aucun paiement n'est initié ici: l'application ne contacte jamais FedaPay.
  */
 export async function POST(request: Request) {
-  const parsed = schema.safeParse(await request.json());
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Données invalides" }, { status: 400 });
+  }
+
+  const parsed = schema.safeParse(payload);
   if (!parsed.success) return NextResponse.json({ error: "Données invalides", details: parsed.error.flatten() }, { status: 400 });
 
-  let booking;
+  // Le numéro est canonisé avant écriture: un numéro injoignable est refusé tout
+  // de suite plutôt que de produire une réservation qui ne sera jamais notifiée,
+  // et la forme canonique rend le quota anti-spam infalsifiable par reformatage.
+  let customerPhone: string;
   try {
-    booking = await createBookingHold(parsed.data);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "UNKNOWN";
-    const status = message === "SLOT_UNAVAILABLE" ? 409 : message === "SERVICE_NOT_FOUND" ? 404 : 500;
-    return NextResponse.json({ error: status === 409 ? "Ce créneau vient d’être réservé" : "Réservation impossible" }, { status });
+    customerPhone = toE164(parsed.data.customerPhone);
+  } catch {
+    return NextResponse.json({ error: "Numéro WhatsApp invalide" }, { status: 400 });
   }
+
+  let hold;
+  try {
+    hold = await createBookingHold({ ...parsed.data, customerPhone });
+  } catch (error) {
+    const failure = FAILURES[error instanceof Error ? error.message : ""];
+    if (!failure) console.error("[bookings] création de la réservation en échec", { salonId: parsed.data.salonId });
+    return NextResponse.json(
+      failure ?? { error: "Réservation impossible" },
+      { status: failure?.status ?? 500 },
+    );
+  }
+
+  const { booking, confirmationToken } = hold;
 
   // Un échec de notification n'invalide pas une réservation déjà acceptée:
   // il est tracé sur la réservation pour permettre un renvoi par le salon.
   let notified = false;
   try {
     await sendConfirmationTemplate({
-      to: parsed.data.customerPhone,
+      to: customerPhone,
       customerName: booking.customerName,
-      confirmationSuffix: booking.confirmationToken!,
+      confirmationSuffix: confirmationToken,
     });
     await db.booking.update({ where: { id: booking.id }, data: { notifiedAt: new Date(), notificationError: null } });
     notified = true;

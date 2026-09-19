@@ -30,7 +30,17 @@ const MESSAGES: Record<string, { title: string; body: string }> = {
  */
 export default async function ConfirmationPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
-  const result = await startPayment(decodeURIComponent(token));
+  // Next décode déjà le segment dynamique ; un second décodage n'est là que pour
+  // absorber un encodage supplémentaire côté Meta. Une séquence `%` invalide
+  // levée par decodeURIComponent doit rester un lien inconnu, pas une erreur 500.
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(token);
+  } catch {
+    decoded = token;
+  }
+
+  const result = await startPayment(decoded);
 
   if (result.kind === "redirect") redirect(result.url);
 

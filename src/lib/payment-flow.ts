@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { evaluateConfirmationToken, splitCustomerName, type TokenRejection } from "@/lib/booking";
+import { evaluateConfirmationToken, hashConfirmationToken, splitCustomerName, type TokenRejection } from "@/lib/booking";
 import { appUrl } from "@/lib/env";
 import { createTransaction, generatePaymentUrl, retrieveTransaction } from "@/lib/fedapay";
 import { optionalEnv } from "@/lib/env";
@@ -15,10 +15,22 @@ export type StartPaymentResult =
  * paiement hébergé. Rejouer le lien réutilise la même transaction.
  */
 export async function startPayment(token: string): Promise<StartPaymentResult> {
-  const booking = await db.booking.findUnique({
-    where: { confirmationToken: token },
-    include: { service: true, salon: true, payment: true },
-  });
+  // La base ne stocke que l'empreinte du token : la recherche porte donc sur le
+  // condensat, jamais sur la valeur reçue.
+  let booking;
+  try {
+    booking = await db.booking.findUnique({
+      where: { confirmationToken: hashConfirmationToken(token) },
+      include: { service: true, salon: true, payment: true },
+    });
+  } catch (error) {
+    // Une panne de base ne doit pas remonter en page d'erreur Next : le client
+    // voit le message d'indisponibilité, la cause reste dans les logs serveur.
+    console.error("[confirmation] lecture de la réservation impossible", {
+      reason: error instanceof Error ? error.message : "inconnu",
+    });
+    return { kind: "error", reason: "LOOKUP_FAILED" };
+  }
 
   const rejection = evaluateConfirmationToken(booking, new Date());
   if (rejection) return { kind: "rejected", reason: rejection };

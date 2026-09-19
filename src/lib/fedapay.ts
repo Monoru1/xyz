@@ -50,9 +50,16 @@ export type FedaPayTransaction = {
   reference?: string;
   status: FedaPayStatus;
   amount: number;
+  /** L'API renvoie la devise sous forme d'objet (`{ iso: "XOF" }`). */
+  currency?: { iso?: string | null } | null;
   merchant_reference?: string | null;
   custom_metadata?: Record<string, unknown> | null;
 };
+
+/** Devise attendue pour toute transaction GENK. */
+export function expectedCurrency(): string {
+  return optionalEnv("FEDAPAY_CURRENCY", "XOF").toUpperCase();
+}
 
 async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
   const response = await fetch(apiUrl(path), {
@@ -161,19 +168,24 @@ export function idempotencyKey(event: WebhookEventPayload, transaction: FedaPayT
 
 /**
  * Refuse toute association ambiguë entre une transaction et une réservation.
- * La référence marchande, la métadonnée, l'identifiant technique et le
- * montant doivent tous correspondre aux valeurs créées par GENK.
+ * La référence marchande, la métadonnée, l'identifiant technique, le montant et
+ * la devise doivent tous correspondre aux valeurs créées par GENK.
+ *
+ * Sans le contrôle de devise, un même montant nominal réglé dans une devise
+ * moins valorisée confirmerait la réservation à vil prix.
  */
 export function transactionMatchesBooking(
   transaction: FedaPayTransaction,
   booking: { id: string; providerTransactionId: string | null; expectedAmount: number },
+  currency = expectedCurrency(),
 ): boolean {
   const metadataBookingId = transaction.custom_metadata?.bookingId;
   return (
     transaction.merchant_reference === booking.id &&
     metadataBookingId === booking.id &&
     String(transaction.id) === booking.providerTransactionId &&
-    transaction.amount === booking.expectedAmount
+    transaction.amount === booking.expectedAmount &&
+    (transaction.currency?.iso ?? "").toUpperCase() === currency
   );
 }
 

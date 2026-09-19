@@ -1,6 +1,21 @@
+/**
+ * Tests unitaires de la logique métier et des garde-fous de sécurité.
+ *
+ * Périmètre: ces tests n'appellent NI FedaPay NI WhatsApp NI PostgreSQL. Ils
+ * valident les décisions prises par GENK à partir de données fournies. Ils ne
+ * remplacent donc pas la recette réelle décrite dans README > « Recette réelle ».
+ */
 import { describe, expect, it } from "vitest";
 import { addMinutes } from "date-fns";
-import { evaluateConfirmationToken, splitCustomerName } from "@/lib/booking";
+import { Prisma } from "@prisma/client";
+import {
+  bookingQuota,
+  evaluateConfirmationToken,
+  generateConfirmationToken,
+  hashConfirmationToken,
+  isSlotConflict,
+  splitCustomerName,
+} from "@/lib/booking";
 import { idempotencyKey, settlementFor, transactionMatchesBooking, type FedaPayTransaction } from "@/lib/fedapay";
 import { isRetryableWhatsAppError, toE164 } from "@/lib/whatsapp";
 
@@ -101,22 +116,119 @@ describe("association transaction/réservation", () => {
     id: 42,
     status: "approved",
     amount: 5500,
+    currency: { iso: "XOF" },
     merchant_reference: "booking_1",
     custom_metadata: { bookingId: "booking_1" },
   } as FedaPayTransaction;
 
   it("accepte uniquement une transaction totalement reliée au Booking", () => {
-    expect(transactionMatchesBooking(transaction, booking)).toBe(true);
+    expect(transactionMatchesBooking(transaction, booking, "XOF")).toBe(true);
   });
 
   it("refuse une référence marchande ou métadonnée divergente", () => {
-    expect(transactionMatchesBooking({ ...transaction, merchant_reference: "booking_2" }, booking)).toBe(false);
-    expect(transactionMatchesBooking({ ...transaction, custom_metadata: { bookingId: "booking_2" } }, booking)).toBe(false);
+    expect(transactionMatchesBooking({ ...transaction, merchant_reference: "booking_2" }, booking, "XOF")).toBe(false);
+    expect(transactionMatchesBooking({ ...transaction, custom_metadata: { bookingId: "booking_2" } }, booking, "XOF")).toBe(false);
   });
 
   it("refuse un identifiant de transaction ou un montant divergent", () => {
-    expect(transactionMatchesBooking({ ...transaction, id: 43 }, booking)).toBe(false);
-    expect(transactionMatchesBooking({ ...transaction, amount: 1 }, booking)).toBe(false);
+    expect(transactionMatchesBooking({ ...transaction, id: 43 }, booking, "XOF")).toBe(false);
+    expect(transactionMatchesBooking({ ...transaction, amount: 1 }, booking, "XOF")).toBe(false);
+  });
+
+  it("refuse une transaction réglée dans une autre devise", () => {
+    expect(transactionMatchesBooking({ ...transaction, currency: { iso: "NGN" } }, booking, "XOF")).toBe(false);
+  });
+
+  it("refuse une transaction sans devise plutôt que de présumer XOF", () => {
+    expect(transactionMatchesBooking({ ...transaction, currency: null }, booking, "XOF")).toBe(false);
+    expect(transactionMatchesBooking({ ...transaction, currency: { iso: null } }, booking, "XOF")).toBe(false);
+  });
+
+  it("refuse une transaction rattachée à la réservation d'un autre client", () => {
+    const autreBooking = { id: "booking_9", providerTransactionId: "99", expectedAmount: 5500 };
+    expect(transactionMatchesBooking(transaction, autreBooking, "XOF")).toBe(false);
+  });
+
+  it("refuse une transaction non encore rattachée côté GENK", () => {
+    expect(transactionMatchesBooking(transaction, { ...booking, providerTransactionId: null }, "XOF")).toBe(false);
+  });
+});
+
+describe("token de confirmation", () => {
+  it("produit un token CSPRNG url-safe de 256 bits", () => {
+    const token = generateConfirmationToken();
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(Buffer.from(token, "base64url")).toHaveLength(32);
+  });
+
+  it("ne répète jamais un token", () => {
+    const tokens = new Set(Array.from({ length: 500 }, generateConfirmationToken));
+    expect(tokens.size).toBe(500);
+  });
+
+  it("ne persiste jamais la valeur en clair", () => {
+    const token = generateConfirmationToken();
+    const stored = hashConfirmationToken(token);
+    expect(stored).not.toBe(token);
+    expect(stored).not.toContain(token);
+  });
+
+  it("produit une empreinte déterministe, donc indexable", () => {
+    const token = generateConfirmationToken();
+    expect(hashConfirmationToken(token)).toBe(hashConfirmationToken(token));
+  });
+
+  it("sépare deux tokens voisins", () => {
+    expect(hashConfirmationToken("a")).not.toBe(hashConfirmationToken("b"));
+  });
+});
+
+describe("conflit de créneau remonté par PostgreSQL", () => {
+  it("traduit la violation de la contrainte d'exclusion Booking_no_overlap", () => {
+    const error = new Prisma.PrismaClientUnknownRequestError(
+      'conflicting key value violates exclusion constraint "Booking_no_overlap" (SQLSTATE 23P01)',
+      { clientVersion: "6.19.3" },
+    );
+    expect(isSlotConflict(error)).toBe(true);
+  });
+
+  it("traduit un échec de sérialisation entre deux réservations simultanées", () => {
+    const error = new Prisma.PrismaClientUnknownRequestError(
+      "could not serialize access due to concurrent update (SQLSTATE 40001)",
+      { clientVersion: "6.19.3" },
+    );
+    expect(isSlotConflict(error)).toBe(true);
+  });
+
+  it("traduit une violation d'unicité Prisma", () => {
+    const error = new Prisma.PrismaClientKnownRequestError("unique", { code: "P2002", clientVersion: "6.19.3" });
+    expect(isSlotConflict(error)).toBe(true);
+  });
+
+  it("laisse remonter une panne qui n'est pas un conflit de créneau", () => {
+    expect(isSlotConflict(new Error("ECONNREFUSED"))).toBe(false);
+    expect(
+      isSlotConflict(new Prisma.PrismaClientKnownRequestError("absent", { code: "P2025", clientVersion: "6.19.3" })),
+    ).toBe(false);
+  });
+});
+
+describe("quota anti-spam WhatsApp", () => {
+  it("applique des plafonds par défaut sans configuration", () => {
+    const quota = bookingQuota();
+    expect(quota.window).toBeGreaterThan(0);
+    expect(quota.maxPerPhone).toBeGreaterThan(0);
+    expect(quota.maxPerEmail).toBeGreaterThanOrEqual(quota.maxPerPhone);
+  });
+
+  it("ignore une configuration absurde plutôt que de désactiver le quota", () => {
+    const previous = process.env.BOOKING_RATE_MAX_PER_PHONE;
+    for (const value of ["0", "-5", "abc", ""]) {
+      process.env.BOOKING_RATE_MAX_PER_PHONE = value;
+      expect(bookingQuota().maxPerPhone).toBe(3);
+    }
+    if (previous === undefined) delete process.env.BOOKING_RATE_MAX_PER_PHONE;
+    else process.env.BOOKING_RATE_MAX_PER_PHONE = previous;
   });
 });
 
