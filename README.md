@@ -67,8 +67,9 @@ Puis `npm run android:release`. Le bundle est produit sous `android/app/build/ou
 | `DATABASE_URL` | SERVER_SECRET | Connexion PostgreSQL/Supabase. Contient le mot de passe du rôle. |
 | `AUTH_SECRET` | SERVER_SECRET | Signature des JWT de session Auth.js. |
 | `AUTH_URL` | SERVER_CONFIG | URL canonique des callbacks Auth.js. À définir en production pour ne pas dépendre de l’en-tête `Host`. |
-| `NEXT_PUBLIC_APP_URL` | PUBLIC_CLIENT | Base des liens de confirmation. Publique par construction : le lien est ouvert hors de l’application. |
-| `NEXT_PUBLIC_CURRENCY` | PUBLIC_CLIENT | Devise affichée. Doit rester alignée sur `FEDAPAY_CURRENCY`. |
+| `AUTH_TRUST_HOST` | SERVER_CONFIG | `true` derrière le proxy HTTPS Vercel ; autorise Auth.js à utiliser les en-têtes transmis par l’hébergeur. |
+| `NEXT_PUBLIC_APP_URL` | PUBLIC | Base HTTPS des liens de confirmation. Publique par construction : le lien est ouvert hors de l’application. |
+| `NEXT_PUBLIC_CURRENCY` | PUBLIC | Devise affichée. Doit rester alignée sur `FEDAPAY_CURRENCY`. |
 | `BOOKING_HOLD_MINUTES` | SERVER_CONFIG | Durée du hold et validité du lien de confirmation. |
 | `BOOKING_RATE_WINDOW_MINUTES` | SERVER_CONFIG | Fenêtre du quota anti-spam. |
 | `BOOKING_RATE_MAX_PER_PHONE` | SERVER_CONFIG | Messages WhatsApp maximum par numéro et par fenêtre. |
@@ -90,6 +91,14 @@ Puis `npm run android:release`. Le bundle est produit sous `android/app/build/ou
 | `ANDROID_KEYSTORE_PATH` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD` | BUILD_SECRET / LOCAL_ONLY | Signature de la release Android. Poste de build uniquement, jamais en production serveur. |
 
 Seules deux variables sont exposées au navigateur : `NEXT_PUBLIC_APP_URL` et `NEXT_PUBLIC_CURRENCY`. Aucun secret ne transite par un préfixe `NEXT_PUBLIC_*`.
+
+### Checklist de saisie
+
+- **Vercel → Project Settings → Environment Variables (Production)** : saisir toutes les variables `PUBLIC`, `SERVER_CONFIG` et `SERVER_SECRET` du tableau. Les secrets à saisir manuellement sont `DATABASE_URL`, `AUTH_SECRET`, `WHATSAPP_ACCESS_TOKEN`, `FEDAPAY_SECRET_KEY` et `FEDAPAY_WEBHOOK_SECRET`; ne jamais les copier dans Git ou Paperclip. Définir `FEDAPAY_ENVIRONMENT=sandbox`, `AUTH_TRUST_HOST=true`, `AUTH_URL=https://DOMAIN` et `NEXT_PUBLIC_APP_URL=https://DOMAIN`.
+- **Poste/CI de build Android uniquement** : saisir `CAPACITOR_SERVER_URL=https://DOMAIN` et, pour une release signée, les quatre variables `ANDROID_*`. Elles ne sont pas nécessaires au runtime Vercel.
+- **Supabase → Connect** : copier l’URL du Session Pooler dans `DATABASE_URL` côté Vercel. Ne lancer ni SQL de lockdown ni migration depuis le déploiement.
+- **Meta WhatsApp Manager** : garder le token hors du dépôt, sélectionner le numéro test, approuver le template et son bouton dynamique `https://DOMAIN/confirmation/{{1}}`. Les destinataires sont normalisés en E.164 ; le corps reçoit le nom du client et le bouton reçoit le token comme paramètres dynamiques.
+- **FedaPay Sandbox → Webhooks** : enregistrer exactement `https://DOMAIN/api/fedapay/webhook`, puis saisir le secret généré dans Vercel.
 
 ## Sécurité
 
@@ -113,14 +122,15 @@ Un webhook reçu ne confirme jamais seul une réservation. Trois contrôles s’
 
 Prérequis : hébergeur compatible Next.js 16 App Router avec runtime Node.js. Le webhook et les liens de confirmation exigent une URL publique en HTTPS.
 
-1. **Verrouiller Supabase** — exécuter `supabase/production-lockdown.sql` dans le SQL Editor, puis les vérifications en fin de fichier.
-2. **Migrations** — `npm run db:migrate` (`prisma migrate deploy`). Les deux migrations existantes sont déjà appliquées ; la commande est alors sans effet. Ne jamais utiliser `migrate dev` ni `db push` en production.
+1. **Supabase** — le lockdown et les migrations sont déjà appliqués. Ne réexécuter ni SQL de lockdown, ni `migrate dev`, ni `db push` depuis le déploiement.
+2. **Connexion** — fournir à Prisma l’URL du Session Pooler Supabase via `DATABASE_URL`; ne jamais la hardcoder.
 3. **Variables** — renseigner le tableau ci-dessus dans l’hébergeur. `NEXT_PUBLIC_APP_URL`, `AUTH_URL` et `CAPACITOR_SERVER_URL` portent la **même** URL HTTPS publique.
 4. **Build** — `npm run build`. **Runtime** — `npm start` (Node.js, pas d’export statique : les routes API et les pages dynamiques en dépendent).
 5. **FedaPay** — déclarer le webhook sur `https://<domaine>/api/fedapay/webhook`, reporter son secret dans `FEDAPAY_WEBHOOK_SECRET`.
 6. **Meta/WhatsApp** — le bouton URL dynamique du template doit avoir pour base `https://<domaine>/confirmation/`, et le domaine doit être ajouté aux domaines autorisés de l’app Meta.
 7. **WAF** — activer la limitation par IP décrite plus haut.
 8. **Android** — reconstruire l’APK/AAB après fixation de `CAPACITOR_SERVER_URL` : l’URL est figée au build.
+9. **Health check** — vérifier `GET https://<domaine>/api/health` : la réponse attendue est uniquement `{ "status": "ok" }`.
 
 ### Recette réelle
 
